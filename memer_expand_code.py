@@ -1,12 +1,15 @@
+# MOnthly Data Creation Code
 import pandas as pd
 import numpy as np
 
 # --- 1. Load Data ---
-
+# assuming df already loaded
 
 # --- 2. Convert date columns to datetime ---
 df['Paid Date'] = pd.to_datetime(df['Paid Date'], errors='coerce')
 df['Incurred Date'] = pd.to_datetime(df['Incurred Date'], errors='coerce')
+df['Contract Start Date'] = pd.to_datetime(df['Contract Start Date'], errors='coerce')
+df['Contract End Date'] = pd.to_datetime(df['Contract End Date'], errors='coerce')
 
 # --- 3. Extract year and month ---
 df['Claim_Year'] = df['Paid Date'].dt.year
@@ -28,19 +31,39 @@ def first_non_null(series):
     return non_null[0] if len(non_null) > 0 else np.nan
 
 claimant_info = (
-    df.groupby(['Claimant Unique ID', 'Claim_Year'], as_index=False)[static_cols]
+    df.groupby(['Claimant Unique ID'], as_index=False)[static_cols]
       .agg(lambda s: first_non_null(s))
 )
 
-# --- 6. Create 12 months for each claimant-year combination ---
-all_months = pd.DataFrame({'Claim_Month': range(1, 13)})
-expanded = claimant_info.merge(all_months, how='cross')
+# --- 6. Add contract-based year expansion ---
+rows = []
+for _, r in claimant_info.iterrows():
+    member_id = r['Claimant Unique ID']
+    start = r['Contract Start Date']
+    end = r['Contract End Date']
+
+    # Handle invalid or missing contract dates
+    if pd.isna(start) or pd.isna(end) or start > end:
+        continue
+
+    start_year = start.year
+    end_year = end.year
+
+    # Create full range of years from start to end
+    for y in range(start_year, end_year + 1):
+        for m in range(1, 13):
+            row = r.copy()
+            row['Claim_Year'] = y
+            row['Claim_Month'] = m
+            rows.append(row)
+
+# Dense month-year dataset based on contract window
+expanded = pd.DataFrame(rows)
 
 # --- 7. Merge back claim-level data ---
 claim_level_cols = [
     c for c in df.columns if c not in static_cols + ['Claim_Year', 'Claim_Month']
 ]
-
 claims_min = df[['Claimant Unique ID', 'Claim_Year', 'Claim_Month'] + claim_level_cols].copy()
 
 merged = expanded.merge(
@@ -52,13 +75,10 @@ merged = expanded.merge(
 # --- 8. Sort and reset index ---
 merged = merged.sort_values(['Claimant Unique ID', 'Claim_Year', 'Claim_Month']).reset_index(drop=True)
 
-# --- 9. (Optional) Fill Claim Amount/ID for missing months with NaN or 0 ---
+# --- 9. Fill Claim Amount for missing months with 0 ---
 merged['Claim Amount'] = merged['Claim Amount'].fillna(0)
 
-# --- 10. Save the result ---
-#output_path = "/mnt/data/uk_pmi_claims_200k_12month_expanded.csv"
-#merged.to_csv(output_path, index=False)
-
-print("✅ Done! Expanded monthly dataset created.")
+# --- 10. Save or inspect ---
+print("✅ Done! Expanded monthly dataset created using contract years.")
 print("Output shape:", merged.shape)
 (merged.head(20))
